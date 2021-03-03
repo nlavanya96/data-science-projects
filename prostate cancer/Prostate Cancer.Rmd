@@ -1,0 +1,65 @@
+---
+title: "Prostate Cancer"
+author: "Lavanya N"
+date: "3/2/2021"
+output: html_document
+---
+
+Linear regression is a supervised machine learning algorithm where the predicted output is continuous and has a constant slope. It is used to predict values within a continuous range.
+
+The `set.seed` function is called once to ensure that the knitting is conditionally deterministic.
+
+```{r}
+set.seed(12345)
+```
+
+A linear regression model will be trained and tested using the `prostate` dataset. This data comes from a study that examined the correlation between the level of prostate specific antigen and a number of clinical measures in men who were about to receive a radical prostatectomy. It contains 97 observations of 9 variables. The 10th variable will be used to split the data into training and testing data. The exact details of the variables can be viewed here: https://rafalab.github.io/pages/649/prostate.html.
+
+```{r}
+prostate <- read.table("http://web.stanford.edu/~hastie/ElemStatLearn/datasets/prostate.data",
+                       header = TRUE)
+str(prostate, max.level = 1)
+```
+
+In supervised learning, training data is used to solve some optimization problem. A corresponding matrix of predictors and outcome vector form the testing data, which are additional observations that are not used to obtain regression parameters and are instead used to evaluate the model that produced them. It is important to ensure that the trained model is tested on a different set of data to avoid biasing.
+
+The prostate dataset already has a logical vector called `train` that can be used to separate training data from testing. The column `train` is removed from both the training and testing data as it is not relevant for the model.
+
+```{r}
+library(dplyr)
+training <- select(filter(prostate, train), -train)
+testing <- select(filter(prostate, !train), -train)
+```
+
+The training data consists of 67 observations and the testing data consists of 30 observations.
+
+```{r}
+c(training = nrow(training), testing = nrow(testing))
+```
+
+The data is first prepared for modeling. In this step, variables to be included in the model should be specified. All variables are being included in this model.
+
+```{r}
+library(tidymodels)
+(simple <- recipe(lpsa ~ ., data = training))
+```
+
+```{r}
+(simple <- prep(simple, training = training))
+```
+
+Subsequently, the type of model or algorithm should be specified. In this case, it is a linear regression model.
+
+```{r}
+lm_model <- linear_reg() %>% set_engine("lm")
+lm_wflow <- workflow() %>% add_model(lm_model) %>% add_formula(lpsa ~ .)
+lm_fit <- fit(lm_wflow, data = bake(simple, new_data = NULL))
+```
+
+Finally, predictions of the model can be obtained in the testing data and the root-mean squared error is calculated. In this case, it is 0.722. This value has more meaning when there are multiple linear models (possibly with different combinations of the variables) to compare for the same purpose.
+
+```{r}
+baked <- bake(simple, new_data = testing)
+select(baked, lpsa) %>% bind_cols(predict(lm_fit, new_data = baked)) %>%
+  rmse(truth = lpsa, estimate = .pred)
+```
