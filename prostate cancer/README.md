@@ -1,1 +1,1 @@
-This exercise involves training and testing a linear regression model on a dataset from a study study that examined the correlation between the level of prostate specific antigen and a number of clinical measures in men who were about to receive a radical prostatectomy at Stanford University.
+This exercise involves training and testing a linear regression model on a dataset from a study that examined the correlation between the level of prostate specific antigen and a number of clinical measures in men who were about to receive a radical prostatectomy at Stanford University.
