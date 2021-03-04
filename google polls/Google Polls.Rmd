@@ -1,0 +1,78 @@
+---
+title: "Google Polls"
+author: "Lavanya N"
+date: "2/24/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+In this example, a penalised logistic regression model is trained and tested using data from Google Polls to predict whether an individual wants Obama to win or another candidate to win.
+
+```{r}
+library(dplyr)
+GooglePoll <- readRDS("GooglePoll.rds")
+glimpse(GooglePoll)
+set.seed(20210220)
+```
+
+It is more convenient to rename the outcomes as the level names are long.
+
+```{r}
+GooglePoll <- mutate(GooglePoll, Obama = as.factor(WantToWin == levels(WantToWin)[1])) %>% select(-WantToWin)
+
+library(tidymodels)
+GP_split <- initial_split(GooglePoll, prob = 0.75, strata = Obama)
+GP_train <- training(GP_split)
+GP_test <- testing(GP_split)
+```
+
+```{r}
+if (.Platform$OS.type == "windows") {  doParallel::registerDoParallel()} else doMC::registerDoMC(parallel::detectCores())
+```
+
+Since variables are being compared to one another but have different units, they should be standardised using step_center and step_scale. The penalty is also pre-specified to have a value of 0.001. Missing values are also dealth with.
+
+```{r}
+logit_recipe <- recipe(Obama ~ . , data = GP_train) %>%
+  step_rm(Time_UTC) %>% step_rm(Weight) %>% # these 2 variables are not meaningful
+  step_naomit(Obama) %>% 
+  step_knnimpute(all_predictors()) %>% # deal with missing values  
+  step_dummy(all_nominal() & all_predictors()) %>% # convert everything except the outcome to dummy variables
+  step_center(all_predictors()) %>% step_scale(all_predictors()) %>% prep
+```
+
+Instead of specifying the tuning parameters, grid search can be employed to find the optimal parameters. This performs cross-validation to see which value of the tuning parameter yields the best predictions outside the data that are used to obtain the coefficients. In this, the optimal parameter is chosen from 50 possible options.
+
+```{r}
+GP_rs <- bootstraps(bake(logit_recipe, new_data = GP_train), times = 50)
+tune_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet")
+wf <- workflow() %>% add_recipe(logit_recipe) %>%
+  remove_formula() %>% add_formula(Obama ~ (.)^2) 
+my_grid <- grid_regular(penalty(), mixture(), levels = 10)
+results <- tune_grid(wf %>% add_model(tune_spec), resamples = GP_rs, grid = my_grid)
+```
+
+The value of the tuning parameter is selected such that the resulting regression model has the highest accuracy.
+
+```{r}
+most_accurate <- results %>% select_best("accuracy")
+final <- finalize_workflow(wf %>% add_model(tune_spec), most_accurate)
+final_fit <- fit(final, data = bake(logit_recipe, new_data = GP_train))
+baked <- bake(logit_recipe, new_data = GP_test)
+```
+
+The resulting logistic regression model classifies 682 observations correctly as not wanting Obama to win and 972 observations correctly as wanting Obama to win. However, the model classifies 66 observations incorrectly as not wanting Obama to win and 253 observations incorrectly as wanting Obama to win.
+
+```{r}
+bind_cols(Obama = baked$Obama, predict(final_fit, new_data = baked)) %>% 
+  conf_mat(truth = Obama, estimate = .pred_class)
+```
+
+The resulting logistic regression model has an accuracy of 0.838.
+
+```{r}
+bind_cols(Obama = baked$Obama, predict(final_fit, new_data = baked)) %>% 
+  accuracy(truth = Obama, estimate = .pred_class)
+```
