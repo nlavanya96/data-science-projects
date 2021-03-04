@@ -1,0 +1,201 @@
+---
+title: "Coronary Heart Disease in South Africa"
+author: "Lavanya N"
+date: "2/24/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Coronary Heart Disease in South Africa
+
+## 1. Loading the Dataset
+
+The dataset is a retrospective sample of males in a heart-disease high-risk region of the Western Cape,
+South Africa. There are roughly two controls per case of CHD. Many of the CHD positive men have undergone blood pressure reduction treatment and other programs to reduce their risk factors after their CHD event. In some cases the measurements were made after these treatments. These data are taken from a larger dataset, described in  Rousseauw et al, 1983, South African Medical Journal. 
+
+```{r}
+SAheart <- read.csv("https://web.stanford.edu/~hastie/ElemStatLearn/datasets/SAheart.data",
+                    header = TRUE)
+SAheart$row.names <- NULL # removing the first column consisting of row indices as it is unnecessary
+```
+
+It is good practice use `str()`. There are 10 variables, 462 observations.
+
+sbp		        systolic blood pressure
+tobacco		    cumulative tobacco (kg)
+ldl		        low density lipoprotein cholesterol
+adiposity     waist-to-hip ratio
+famhist		    family history of heart disease (Present, Absent)
+typea		      type-A behavior
+obesity       body mass index (BMI)
+alcohol		    current alcohol consumption
+age		        age at onset
+chd		        response, coronary heart disease
+
+```{r}
+str(SAheart)
+```
+## 2. Predicting Coronary Heart Disease
+
+R requires outcome variables in classification problems to be designated as factors. If this is not done, many supervised learning algorithms will treat them as continuous variables. While they are coded as factors in the step below, they can always be coerced to dummy variables later on, if necessary. This is done below.
+
+While there are several algorithms that can be used for classification problems, the models that will be explored below are the linear probability model (LPM), logistic regression, and linear discriminant analysis (LDA).
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+SAheart$chd <- factor(SAheart$chd, labels = c("yes", "no"), levels = 1:0) # designating outcome variable as a factor
+```
+
+```{r}
+library(tidymodels)
+set.seed(20210220)
+
+heart_split <- initial_split(SAheart, prob = 0.75, strata = chd)
+heart_train <- training(heart_split)
+heart_test <- testing(heart_split)
+```
+
+a. Binary Classification via a Linear Probability Model
+
+```{r}
+heart_recipe <- recipe(chd ~ ., data = heart_train) %>% prep
+lm_model <- linear_reg() %>% set_engine("lm")
+lm_wflow <- workflow() %>% add_model(lm_model) %>% 
+  add_formula(as.integer(chd == "yes") ~ .)
+lm_fit <- fit(lm_wflow, data = bake(heart_recipe, new_data = NULL))
+y_hat <- predict(lm_fit, new_data = bake(heart_recipe, new_data = heart_test))
+```
+
+A matrix of confusion can be used to evaluate classifications. This is created below by making a simple contingency table between the levels of classification and the outcomes in the testing data. The model classifies 4 observations of `chd` correctly as `yes`, and 21 observations of `chd` correctly as `no`. However, the model classifies 21 observations of `chd` incorrectly as `yes`, and 4 observations of `chd` incorrectly as `no`.
+
+```{r}
+y_hat <- mutate(y_hat, z = factor(.pred > 0.5, levels = c(TRUE, FALSE), labels = c("yes", "no")))
+table(y_hat$z, heart_test$chd)
+```
+
+Another method for evaluating classifications is to compute the accuracy of classifications. This simplifies the task of comparing different models. In this case, the accuracy of the model is 0.783.
+
+```{r}
+(table(y_hat$z, heart_test$chd)[1] + table(y_hat$z, heart_test$chd)[4])/(table(y_hat$z, heart_test$chd)[1] + table(y_hat$z, heart_test$chd)[2] + table(y_hat$z, heart_test$chd)[3] + table(y_hat$z, heart_test$chd)[4])
+```
+
+b. Binary Classification via Logistic Regression
+
+The model classifies 20 observations of `chd` correctly as `yes`, and 71 observations of `chd` correctly as `no`. However, the model classifies 4 observations of `chd` incorrectly as `yes`, and 20 observations of `chd` incorrectly as `no`.
+
+```{r}
+logit_model <- logistic_reg() %>% set_engine("glm")
+logit_wflow <- workflow() %>% add_model(logit_model) %>% add_formula(chd ~ .)
+logit_fit <- fit(logit_wflow, data = bake(heart_recipe, new_data = NULL))
+bind_cols(chd = heart_test$chd,
+          predict(logit_fit, new_data = bake(heart_recipe, new_data = heart_test))) %>%
+  conf_mat(truth = chd, estimate = .pred_class)
+```
+
+The accuracy of the model is 0.791.
+
+```{r}
+bind_cols(chd = heart_test$chd,
+          predict(logit_fit, new_data = bake(heart_recipe, new_data = heart_test))) %>%
+  accuracy(truth = chd, estimate = .pred_class)
+```
+
+c. Classification via Logistic Regression with Penalisation
+
+```{r}
+if (.Platform$OS.type == "windows") {
+  doParallel::registerDoParallel()
+} else doMC::registerDoMC(parallel::detectCores())
+```
+
+```{r}
+logit_recipe <- 
+  recipe(chd ~ ., data = heart_train) %>% step_dummy(all_nominal()) %>%
+  step_normalize(all_predictors()) %>% prep
+
+heart_rs <- bootstraps(heart_train, times = 50)
+tune_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% set_engine("glmnet")
+wf <- workflow() %>% add_recipe(logit_recipe) %>% 
+  remove_formula() %>% add_formula(chd ~ (.)^2)
+```
+
+```{r}
+my_grid <- grid_regular(penalty(), mixture(), levels = 10)
+results <- tune_grid(wf %>% add_model(tune_spec), 
+                     resamples = heart_rs, grid = my_grid)
+```
+
+The model classifies 15 observations of `chd` correctly as `yes`, and 71 observations of `chd` correctly as `no`. However, the model classifies 4 observations of `chd` incorrectly as `yes`, and 25 observations of `chd` incorrectly as `no`.
+
+```{r}
+most_accurate <- results %>% select_best("accuracy")
+final <- finalize_workflow(wf %>% add_model(tune_spec), most_accurate)
+final_fit <- fit(final, data = heart_train)
+baked <- bake(logit_recipe, new_data = heart_test)
+bind_cols(chd = heart_test$chd, 
+          predict(final_fit, new_data = heart_test)) %>% 
+  conf_mat(truth = chd, estimate = .pred_class)
+```
+
+The accuracy of the model is 0.748.
+
+```{r}
+bind_cols(chd = heart_test$chd, 
+          predict(final_fit, new_data = heart_test)) %>% 
+  accuracy(truth = chd, estimate = .pred_class)
+```
+
+The Receiver Operating Characteristic (ROC) curve was used in the cross validation process to choose the best value of the tuning parameters according to which yielded the highest Area Under Curve (AUC) in the held-out fold. This can be used to evaluate the classification of the outcome variable in the testing data.
+
+```{r}
+library(pROC)
+penalized_logit_ROC <- roc(heart_test$chd,
+                           predict(final_fit, new_data = heart_test, type = "prob")$.pred_yes,
+                           levels = c("yes", "no"))
+plot(penalized_logit_ROC, las = 1)
+```
+
+The area under the curve is 0.828.
+
+```{r}
+auc(penalized_logit_ROC)
+```
+
+Calibration plots can be used to judge how well models are calibrated. If they are well-calibrated, the lines should lie close to the 45-degree line. In this case, the lines representing the logistic regression models without and with penalisation do not lie close. The purple line represents the model without penalisation, and the blue line represents the model with penalisation.
+
+```{r}
+cal <- bind_cols(chd = heart_test,
+                 glm = predict(logit_fit, new_data = heart_test, type = "prob")$.pred_yes,
+                 glmnet = predict(final_fit, new_data = heart_test, type = "prob")$.pred_yes)
+cc <- caret::calibration(chd ~ glm  + glmnet, data = cal)
+plot(cc)
+```
+
+d. Classification via Linear Discriminant Analysis
+
+The model classifies 20 observations of `chd` correctly as `yes`, and 69 observations of `chd` correctly as `no`. However, the model classifies 6 observations of `chd` incorrectly as `yes`, and 20 observations of `chd` incorrectly as `no`.
+
+```{r}
+library(discrim)
+lda_model <- discrim_linear() %>% set_engine("MASS")
+lda_fit <- lda_model %>% fit(chd ~ ., data = heart_train)
+bind_cols(chd = heart_test$chd,
+          predict(lda_fit, new_data = heart_test)) %>%
+  conf_mat(truth = chd, estimate = .pred_class)
+```
+
+The accuracy of the model is 0.774.
+
+```{r}
+bind_cols(chd = heart_test$chd,
+          predict(lda_fit, new_data = heart_test)) %>%
+  accuracy(truth = chd, estimate = .pred_class)
+```
+
+## 3. Selecting the Best Model
+
+Based on accuracy of classification in the testing data, the logistic regression model (accuracy = 0.791) is the most suitable for predicting occurrence of coronary heart disease given this set of regressors.
